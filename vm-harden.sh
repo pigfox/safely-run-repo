@@ -5,7 +5,7 @@
 # Powers the VM off (graceful, then forced) and applies a hardened config:
 #   * clipboard + drag-and-drop disabled
 #   * ALL shared folders removed
-#   * NAT-only networking with a single host->guest SSH port-forward
+#   * networking: nic1 DETACHED by default (no outbound), host-only nic2 for SSH
 #   * fixed RAM / CPU count
 #   * audio + USB controllers disabled (attack-surface reduction)
 #
@@ -45,28 +45,31 @@ else
   ok "Shared folders removed."
 fi
 
-# --- Networking: NAT only + a single SSH port-forward (idempotent) ---
-VBoxManage modifyvm "${VM_NAME}" --nic1 nat
+# --- Networking: detached nic1 (baseline) + host-only nic2 for SSH ---
+# nic1 is the OPTIONAL internet adapter. Its BASELINE is detached (null) so the
+# 'clean-base' snapshot captures a no-outbound posture: every run boots isolated
+# and only `vm-cycle.sh --net` flips nic1 to NAT. See lib/config.sh.
+set_nic1_mode "${NIC1_DETACHED_MODE}"
+ok "nic1=${NIC1_DETACHED_MODE} (detached): baseline posture has NO outbound network."
 
-# Clear ANY existing nic1 forward occupying the host SSH port, regardless of its
-# rule name. Deleting only by SSH_RULE_NAME misses a forward added under a
-# different name (e.g. a pre-existing uppercase 'SSH'), which then collides on
-# the host port when we re-add. Read the current rules first, then act.
+# SSH no longer rides NAT, so drop any stale nic1 port-forwards (read, then act).
 mapfile -t _portfwds < <(
   VBoxManage showvminfo "${VM_NAME}" --machinereadable \
-    | sed -n 's/^Forwarding([0-9]*)="\(.*\)"$/\1/p' \
-    | awk -F, -v port="${HOST_SSH_PORT}" -v ip="${HOST_SSH_ADDR}" \
-        '$4 == port && ($3 == "" || $3 == ip) { print $1 }'
+    | sed -n 's/^Forwarding([0-9]*)="\([^,]*\),.*$/\1/p'
 )
 for _fwd in "${_portfwds[@]}"; do
   [ -n "${_fwd}" ] || continue
-  log "Removing conflicting NAT forward '${_fwd}' (host port ${HOST_SSH_PORT})"
+  log "Removing stale NAT port-forward '${_fwd}' (SSH now uses host-only nic2)"
   VBoxManage modifyvm "${VM_NAME}" --natpf1 delete "${_fwd}" 2>/dev/null || true
 done
 
-VBoxManage modifyvm "${VM_NAME}" \
-  --natpf1 "${SSH_RULE_NAME},tcp,${HOST_SSH_ADDR},${HOST_SSH_PORT},,${GUEST_SSH_PORT}"
-ok "nic1=nat, forward ${HOST_SSH_ADDR}:${HOST_SSH_PORT} -> guest:${GUEST_SSH_PORT} (rule '${SSH_RULE_NAME}')."
+# nic2 is a PERMANENT host-only control link: host->guest reachable, but it
+# carries no internet route, so SSH survives with nic1 detached. The flag name
+# differs across VirtualBox versions, so try the new spelling then the old.
+ensure_hostonly_if
+VBoxManage modifyvm "${VM_NAME}" --nic2 hostonly --host-only-adapter2 "${HOSTONLY_IF}" 2>/dev/null \
+  || VBoxManage modifyvm "${VM_NAME}" --nic2 hostonly --hostonlyadapter2 "${HOSTONLY_IF}"
+ok "nic2=hostonly on ${HOSTONLY_IF}; guest SSH target ${HOSTONLY_GUEST_IP}:${GUEST_SSH_PORT}."
 
 # --- Resources ---
 VBoxManage modifyvm "${VM_NAME}" --memory "${VM_MEMORY_MB}" --cpus "${VM_CPUS}"
@@ -109,12 +112,25 @@ before the snapshot. Do this once:
          #   sudo -u ${RUNNER_USER} mkdir -p /home/${RUNNER_USER}/.ssh
          #   ...append your id_*.pub to authorized_keys, chmod 600...
 
-  3. Verify from the HOST that SSH answers:
-         ssh -p ${HOST_SSH_PORT} ${RUNNER_USER}@${HOST_SSH_ADDR}
+  3. Give nic2 (the host-only control link) a STATIC IP so the host can SSH in
+     even while nic1 is detached. Find the 2nd interface name, then configure it:
+         ip -o link show | awk -F': ' '{print \$2}'   # e.g. enp0s8
 
-  4. Power the guest off cleanly, then capture the clean baseline:
-         ./snapshot-base.sh
+         # Create /etc/netplan/99-hostonly.yaml (match YOUR nic2 name), 0600:
+         #   network:
+         #     version: 2
+         #     ethernets:
+         #       enp0s8:
+         #         dhcp4: no
+         #         addresses: [${HOSTONLY_GUEST_IP}/24]
+         sudo netplan apply
 
-After that, ./vm-up.sh and ./vm-down.sh drive each disposable run.
+  4. Verify from the HOST that SSH answers over the host-only link:
+         ssh -p ${SSH_PORT} ${RUNNER_USER}@${SSH_ADDR}
+
+  5. Power the guest off cleanly, then capture the clean baseline:
+         ./vm-cycle.sh --snapshot
+
+After that, ./vm-cycle.sh (no args) drives each disposable run.
 ----------------------------------------------------------------------
 EOF
