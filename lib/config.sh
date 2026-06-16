@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 # lib/config.sh — shared configuration + helpers for safely-run-repo HOST scripts.
 #
-# This file is SOURCED by vm-harden.sh / vm-up.sh / vm-down.sh / snapshot-base.sh.
-# It is not meant to be executed directly. All host-side "magic literals" live in
-# the config block below; every value can be overridden from the environment.
-#
-# NOTE: scan.sh is intentionally standalone (it runs IN the VM too) and does not
-# source this file.
+# This file is SOURCED by vm-harden.sh and vm-cycle.sh. It is not meant to be
+# executed directly. All host-side "magic literals" live in the config block
+# below; every value can be overridden from the environment.
 
 # ---------------------------------------------------------------------------
 # Config block — single source of truth for every magic literal.

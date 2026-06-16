@@ -1,3 +1,0 @@
-# Drop custom YARA rules (*.yar / *.yara) in this directory.
-# scan.sh runs every rule here recursively against the target and
-# self-skips this whole step if the directory has no rule files.

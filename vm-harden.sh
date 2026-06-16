@@ -47,7 +47,23 @@ fi
 
 # --- Networking: NAT only + a single SSH port-forward (idempotent) ---
 VBoxManage modifyvm "${VM_NAME}" --nic1 nat
-VBoxManage modifyvm "${VM_NAME}" --natpf1 delete "${SSH_RULE_NAME}" 2>/dev/null || true
+
+# Clear ANY existing nic1 forward occupying the host SSH port, regardless of its
+# rule name. Deleting only by SSH_RULE_NAME misses a forward added under a
+# different name (e.g. a pre-existing uppercase 'SSH'), which then collides on
+# the host port when we re-add. Read the current rules first, then act.
+mapfile -t _portfwds < <(
+  VBoxManage showvminfo "${VM_NAME}" --machinereadable \
+    | sed -n 's/^Forwarding([0-9]*)="\(.*\)"$/\1/p' \
+    | awk -F, -v port="${HOST_SSH_PORT}" -v ip="${HOST_SSH_ADDR}" \
+        '$4 == port && ($3 == "" || $3 == ip) { print $1 }'
+)
+for _fwd in "${_portfwds[@]}"; do
+  [ -n "${_fwd}" ] || continue
+  log "Removing conflicting NAT forward '${_fwd}' (host port ${HOST_SSH_PORT})"
+  VBoxManage modifyvm "${VM_NAME}" --natpf1 delete "${_fwd}" 2>/dev/null || true
+done
+
 VBoxManage modifyvm "${VM_NAME}" \
   --natpf1 "${SSH_RULE_NAME},tcp,${HOST_SSH_ADDR},${HOST_SSH_PORT},,${GUEST_SSH_PORT}"
 ok "nic1=nat, forward ${HOST_SSH_ADDR}:${HOST_SSH_PORT} -> guest:${GUEST_SSH_PORT} (rule '${SSH_RULE_NAME}')."
