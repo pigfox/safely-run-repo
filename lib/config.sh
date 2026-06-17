@@ -153,12 +153,19 @@ ensure_powered_off() {
 # daemon is up, regardless of whether keys or passwords are configured.
 # ---------------------------------------------------------------------------
 ssh_reachable() {
-  ssh "${SSH_COMMON_OPTS[@]}" \
+  # The ssh call is EXPECTED to fail (exit 255): PreferredAuthentications=none
+  # offers no auth, so sshd rejects us. Reachability is judged by the rejection
+  # banner, NOT by ssh's exit status. We therefore CAPTURE the output first and
+  # grep the variable, rather than piping 'ssh | grep': callers run under
+  # 'set -o pipefail', which would make the pipeline inherit ssh's 255 and mask
+  # grep's match — a false "unreachable" even while sshd is answering.
+  local out
+  out="$(ssh "${SSH_COMMON_OPTS[@]}" \
       -o ConnectTimeout=4 \
       -o BatchMode=yes \
       -o PreferredAuthentications=none \
-      "${RUNNER_USER}@${HOST_SSH_ADDR}" true 2>&1 \
-    | grep -qiE 'permission denied|authentication|publickey|password'
+      "${RUNNER_USER}@${HOST_SSH_ADDR}" true 2>&1)" || true
+  grep -qiE 'permission denied|authentication|publickey|password' <<<"${out}"
 }
 
 wait_for_ssh() {
